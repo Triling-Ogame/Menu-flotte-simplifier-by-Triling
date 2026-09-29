@@ -1,0 +1,619 @@
+// ==UserScript==
+// @name         OGame - Menu flotte by Triling
+// @namespace    local.alban.ogame.essai.icones
+// @version      0.6.1
+// @description  Variante avec icônes à gauche, nombre de vaisseaux élargi et sans coordonnées de départ.
+// @match        https://*.ogame.gameforge.com/game/index.php*
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(() => {
+  'use strict';
+
+  const PANEL_ID = 'alban-expedition-returns';
+  const previous = document.getElementById(PANEL_ID);
+  if (previous?.dataset.variant === 'icons') return;
+  // Si l'ancien script a démarré en premier, remplacer son panneau à l'écran.
+  previous?.remove();
+
+  const panel = document.createElement('section');
+  panel.id = PANEL_ID;
+  panel.dataset.variant = 'icons';
+  panel.setAttribute('aria-label', 'Événements compacts');
+  const shadow = panel.attachShadow({ mode: 'open' });
+  shadow.innerHTML = `
+    <style>
+      :host { position: fixed; top: 35px; left: 8px; width: min(370px, calc(100vw - 16px));
+        max-height: calc(100vh - 48px); z-index: 100; color: #b9cfe6;
+        font: 11px Arial, sans-serif; pointer-events: auto; }
+      .box { background: rgba(11,19,26,.95); border: 1px solid #344757; border-radius: 5px;
+        box-shadow: 0 4px 14px #0009; overflow: hidden; }
+      header { display: flex; align-items: center; gap: 7px; padding: 7px 9px;
+        background: #162631; color: #d9e8f5; font-weight: bold; }
+      header span { flex: 1; } header button { color: #b9cfe6; background: none; border: 0;
+        cursor: pointer; font-size: 15px; line-height: 1; }
+      .stats { padding: 3px 8px; display: flex; gap: 12px; font-size: 10px;
+        color: #a9c2d3; border-top: 1px solid #25333e; font-variant-numeric: tabular-nums; }
+      .rows { max-height: calc(100vh - 112px); overflow-y: auto; }
+      .zoom-controls { display: flex; align-items: center; justify-content: flex-end; gap: 5px;
+        padding: 3px 8px; border-top: 1px solid #25333e; color: #a9c2d3; font-size: 10px; }
+      .zoom-controls button { min-width: 19px; height: 18px; padding: 0; border: 1px solid #344757;
+        border-radius: 3px; background: #162631; color: #d9e8f5; cursor: pointer; }
+      .zoom-controls output { min-width: 29px; text-align: center; }
+      .row { display: grid; grid-template-columns: 21px minmax(78px,1fr) 62px 64px 18px 72px; gap: 4px;
+        align-items: center; padding: 4px 7px; border-top: 1px solid #25333e; white-space: nowrap; }
+      .mission-icon { display: flex; justify-content: center; align-items: center; width: 21px; height: 17px; }
+      .mission-icon img { width: 15px; height: 15px; object-fit: contain; }
+      .timer { color: #8db9fa; font-weight: bold; font-variant-numeric: tabular-nums;
+        overflow: hidden; text-overflow: ellipsis; }
+      .clock { font-variant-numeric: tabular-nums; overflow: hidden; }
+      .ships { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #e5eaf0;
+        text-align: right; font-variant-numeric: tabular-nums; }
+      .direction { color: #91a5b7; text-align: center; font-size: 9px; width: 18px;
+        height: 15px; line-height: 15px; cursor: help; }
+      .fleet-tip { display: none; position: fixed; z-index: 200; width: max-content;
+        max-width: min(290px, 90vw); max-height: min(340px, 60vh); overflow: auto;
+        padding: 8px 10px; background: #111c24; border: 1px solid #536a7c;
+        border-radius: 4px; box-shadow: 0 5px 18px #000c; color: #d6e5f2;
+        line-height: 1.5; pointer-events: none; white-space: normal; }
+      .fleet-tip strong { display: block; margin-bottom: 3px; color: #fff; }
+      .enemy-attack .timer, .enemy-attack .dest { color: #c89aff; }
+      .own-attack .timer, .own-attack .dest { color: #d95a54; }
+      .transport .timer, .transport .dest { color: #7bce93; }
+      .station .timer, .station .dest { color: #a8dd8b; }
+      .colonize .timer, .colonize .dest { color: #82dbed; }
+      .ally-station .timer, .ally-station .dest { color: #f7dc73; }
+      .spy .timer, .spy .dest { color: #d9a33e; }
+      .dest { color: #83aef4; font-weight: normal; overflow: hidden; text-overflow: ellipsis; }
+      a.dest { text-decoration: none; }
+      a.dest:hover { text-decoration: underline; }
+      .dest { text-align: right; }
+      .empty { padding: 12px; color: #9aafbd; line-height: 1.4; }
+      @media(max-width: 850px) { :host { top: auto; bottom: 8px; max-height: 45vh;
+        transform-origin: bottom left !important; } }
+    </style>
+    <div class="box">
+      <header><span>Menu flotte simplifier</span>
+        <button id="toggle" title="Masquer les expéditions et découvertes" aria-label="Masquer les expéditions et découvertes">−</button></header>
+      <div class="stats"><span id="fleet-slots">Flottes —/—</span><span id="exp-slots">Expéditions —/—</span></div>
+      <div class="rows" id="rows"></div>
+      <div class="zoom-controls"><span>Zoom</span>
+        <button id="zoom-out" type="button" aria-label="Réduire le menu">−</button>
+        <output id="zoom-value">100%</output>
+        <button id="zoom-in" type="button" aria-label="Agrandir le menu">+</button></div>
+    </div><div class="fleet-tip" id="fleet-tip"></div>`;
+  document.body.append(panel);
+
+  const rowsBox = shadow.getElementById('rows');
+  const zoomValue = shadow.getElementById('zoom-value');
+  const zoomKey = 'triling-ogame-menu-zoom';
+  let zoom = 100;
+  try { zoom = Number(localStorage.getItem(zoomKey)) || 100; } catch (_) { /* stockage indisponible */ }
+  zoom = Math.min(140, Math.max(70, Math.round(zoom / 10) * 10));
+  function applyZoom() {
+    const factor = zoom / 100;
+    panel.style.transformOrigin = 'top left';
+    panel.style.transform = `scale(${factor})`;
+    panel.style.width = `${Math.min(370, Math.floor((window.innerWidth - 16) / factor))}px`;
+    panel.style.maxHeight = `${Math.floor((window.innerHeight - 48) / factor)}px`;
+    rowsBox.style.maxHeight = `${Math.max(80, Math.floor((window.innerHeight - 138) / factor))}px`;
+    zoomValue.value = `${zoom}%`;
+    shadow.getElementById('zoom-out').disabled = zoom <= 70;
+    shadow.getElementById('zoom-in').disabled = zoom >= 140;
+  }
+  function changeZoom(delta) {
+    zoom = Math.min(140, Math.max(70, zoom + delta));
+    try { localStorage.setItem(zoomKey, String(zoom)); } catch (_) { /* stockage indisponible */ }
+    applyZoom();
+  }
+  shadow.getElementById('zoom-out').addEventListener('click', () => changeZoom(-10));
+  shadow.getElementById('zoom-in').addEventListener('click', () => changeZoom(10));
+  window.addEventListener('resize', applyZoom);
+  applyZoom();
+  const fleetSlots = shadow.getElementById('fleet-slots');
+  const expSlots = shadow.getElementById('exp-slots');
+  const toggle = shadow.getElementById('toggle');
+  const fleetTip = shadow.getElementById('fleet-tip');
+  const list = new Map();
+  const visibilityKey = 'alban-ogame-show-expeditions';
+  let showExpeditions = true;
+  try { showExpeditions = localStorage.getItem(visibilityKey) !== 'false'; } catch (_) { /* stockage indisponible */ }
+  let renderedSignature = '';
+  let observedTable = null;
+  let updatePending = false;
+  let gameClockOffset = null;
+  // Renseigner un nombre ici uniquement si OGame ne montre pas le maximum
+  // d'expéditions dans la page : null laisse la valeur inconnue.
+  const EXPEDITION_SLOT_LIMIT = null;
+  let galaxySlots = null;
+  let expeditionLimit = EXPEDITION_SLOT_LIMIT;
+  let movementRefreshPending = false;
+  const phalanxReports = new WeakMap();
+  const galaxyGoKey = 'triling-ogame-last-galaxy-go';
+  const boundGalaxyGo = new WeakSet();
+  let lastGalaxyGo = null;
+  try { lastGalaxyGo = JSON.parse(sessionStorage.getItem(galaxyGoKey) || 'null'); }
+  catch (_) { /* stockage indisponible */ }
+
+  function gameTimeNow() {
+    // Utiliser l'horloge affichée par OGame, avec le même fuseau que le jeu.
+    return readClock(document.querySelector('#OGameClock, .OGameClock')?.textContent || '') ||
+      clockFromTimestamp(Date.now());
+  }
+
+  function showGalaxyGoTime() {
+    const galaxyInput = document.querySelector('#galaxy_input');
+    const systemInput = document.querySelector('#system_input');
+    if (!galaxyInput || !systemInput) return;
+    const header = document.querySelector('#galaxyHeader') || galaxyInput.closest('form') || galaxyInput.parentElement;
+    if (!header) return;
+    const go = header.querySelector('.btn_blue[onclick*="submitForm"]') ||
+      document.querySelector('#galaxyHeader .btn_blue[onclick*="submitForm"]');
+    if (go && !boundGalaxyGo.has(go)) {
+      // Le bouton peut contenir d'autres éléments cliquables : écouter le Go lui-même.
+      go.addEventListener('click', recordGalaxyGo, true);
+      boundGalaxyGo.add(go);
+    }
+    let label = document.querySelector('.triling-galaxy-go-time');
+    if (!label) {
+      label = document.createElement('span');
+      label.className = 'triling-galaxy-go-time';
+      label.style.cssText = 'margin-left:8px;color:#9fc9dc;font:10px Arial,sans-serif;white-space:nowrap';
+      (go || systemInput).insertAdjacentElement('afterend', label);
+    } else if (go && label.previousElementSibling !== go) {
+      go.insertAdjacentElement('afterend', label);
+    }
+    const coords = lastGalaxyGo?.coords ? ` [${lastGalaxyGo.coords}]` : '';
+    const value = `Dernier Go${coords} : ${lastGalaxyGo?.time || '—'}`;
+    if (label.textContent !== value) label.textContent = value;
+  }
+
+  function recordGalaxyGo() {
+    const galaxy = document.querySelector('#galaxy_input')?.value?.trim();
+    const system = document.querySelector('#system_input')?.value?.trim();
+    lastGalaxyGo = { time: gameTimeNow(), coords: galaxy && system ? `${galaxy}:${system}` : '' };
+    try { sessionStorage.setItem(galaxyGoKey, JSON.stringify(lastGalaxyGo)); }
+    catch (_) { /* stockage indisponible */ }
+    showGalaxyGoTime();
+  }
+
+  document.addEventListener('click', event => {
+    if (!document.querySelector('#galaxy_input, #system_input')) return;
+    const go = document.querySelector('#galaxyHeader .btn_blue[onclick*="submitForm"]') ||
+      document.querySelector('.btn_blue[onclick*="submitForm"]');
+    if (!go || !go.contains(event.target) || boundGalaxyGo.has(go)) return;
+    recordGalaxyGo();
+  }, true);
+  document.addEventListener('submit', event => {
+    if (event.target.contains?.(document.querySelector('#galaxy_input'))) recordGalaxyGo();
+  }, true);
+  try {
+    const previousSlots = JSON.parse(sessionStorage.getItem('triling-ogame-galaxy-slots') || 'null');
+    if (previousSlots && Number.isInteger(previousSlots.used) && Number.isInteger(previousSlots.total))
+      galaxySlots = previousSlots;
+  } catch (_) { /* stockage indisponible */ }
+
+  function recordFleetSlots(used, total) {
+    galaxySlots = { used, total };
+    try { sessionStorage.setItem('triling-ogame-galaxy-slots', JSON.stringify(galaxySlots)); }
+    catch (_) { /* stockage indisponible */ }
+    updateStats();
+  }
+
+  function readMovementSlots(root) {
+    // Le menu Flotte expose les deux compteurs : « Flottes: 1 / 30 » et
+    // « Expéditions: 0 / 13 ». Exiger les deux libellés évite les autres
+    // fractions qui figurent dans la page ou dans notre propre panneau.
+    const text = root.textContent || '';
+    const fleets = text.match(/\bFlottes?\s*:\s*(\d+)\s*\/\s*(\d+)/i);
+    const expeditions = text.match(/\bExp[ée]ditions?\s*:\s*(\d+)\s*\/\s*(\d+)/i);
+    if (!fleets || !expeditions) return false;
+    recordFleetSlots(Number(fleets[1]), Number(fleets[2]));
+    expeditionLimit = Number(expeditions[2]);
+    updateStats();
+    return true;
+  }
+
+  function isMovementPage() {
+    return /(?:page|component)=movement\b/.test(location.search);
+  }
+
+  async function refreshMovementSlots() {
+    if (movementRefreshPending || document.hidden || isMovementPage()) return;
+    movementRefreshPending = true;
+    try {
+      // Lecture seule du même écran que le lien « Flotte » d'OGame.
+      const url = new URL('/game/index.php', location.origin);
+      url.searchParams.set('page', 'ingame');
+      url.searchParams.set('component', 'movement');
+      const response = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
+      if (response.ok) readMovementSlots(new DOMParser().parseFromString(await response.text(), 'text/html'));
+    } catch (_) { /* Réessayer au prochain passage sans toucher au compteur visible. */ }
+    finally { movementRefreshPending = false; }
+  }
+
+  function readGameSlots() {
+    if (isMovementPage() && readMovementSlots(document.body)) return;
+    // La galaxie donne le nombre réel de flottes : les lignes aller/retour
+    // d'un même trajet ne doivent surtout pas être comptées deux fois.
+    const isGalaxy = /(?:page|component)=galaxy\b/.test(location.search) ||
+      Boolean(document.querySelector('#galaxyContent, #galaxytable'));
+    // Le bandeau « Slots utilisés » peut se trouver hors du tableau de
+    // galaxie (notamment avec Infinity). Lire le document entier sur cette page.
+    const fleetMatch = isGalaxy && document.body.textContent.match(/(?:slots?\s*(?:utilis[ée]s?|occup[ée]s?|used)|flottes?\s*(?:utilis[ée]es?|en\s*cours))\s*:?\s*(\d+)\s*\/\s*(\d+)/i);
+    if (fleetMatch) {
+      recordFleetSlots(Number(fleetMatch[1]), Number(fleetMatch[2]));
+    }
+    // Le compteur « découvertes » de la galaxie est un autre indicateur.
+    // Chercher le plafond d'expéditions uniquement dans les blocs dédiés.
+    for (const el of document.querySelectorAll('[id*="expedition" i], [class*="expeditionSlot" i]')) {
+      if (panel.contains(el)) continue;
+      const match = el.textContent?.match(/(?:exp[ée]ditions?|expedition\s*slots?)\s*:?\s*\d+\s*\/\s*(\d+)/i) ||
+        el.textContent?.trim().match(/^\d+\s*\/\s*(\d+)$/);
+      if (match && Number(match[1]) > 0) { expeditionLimit = Number(match[1]); break; }
+    }
+  }
+
+  function updateStats() {
+    const expeditionCount = [...list.values()].filter(item => item.expedition).length;
+    fleetSlots.textContent = galaxySlots ? `Flottes ${galaxySlots.used}/${galaxySlots.total}` : 'Flottes —/—';
+    fleetSlots.title = galaxySlots ? 'Flottes utilisées / maximum, relevé du menu Flotte' :
+      'Chargement des slots de flotte';
+    expSlots.textContent = `Expéditions ${expeditionCount}${expeditionLimit ? `/${expeditionLimit}` : ''}`;
+    expSlots.title = 'Expéditions en cours / limite simultanée (si affichée par OGame)';
+  }
+
+  toggle.addEventListener('click', () => {
+    showExpeditions = !showExpeditions;
+    try { localStorage.setItem(visibilityKey, String(showExpeditions)); } catch (_) { /* stockage indisponible */ }
+    updateToggle();
+    render();
+  });
+
+  function updateToggle() {
+    toggle.textContent = showExpeditions ? '−' : '+';
+    toggle.title = showExpeditions ? 'Masquer les expéditions et découvertes' : 'Afficher les expéditions et découvertes';
+    toggle.setAttribute('aria-label', toggle.title);
+  }
+  updateToggle();
+
+  function cellText(row, selector) {
+    return row.querySelector(selector)?.textContent?.trim().replace(/\s+/g, ' ') || '';
+  }
+
+  function coordinate(text) {
+    return text.match(/\[\s*\d+\s*:\s*\d+\s*:\s*\d+\s*\]/)?.[0] || text || '—';
+  }
+
+  function galaxyLink(cell, coords) {
+    const nativeLink = cell?.querySelector('a[href]');
+    if (nativeLink) {
+      try {
+        const url = new URL(nativeLink.href, location.href);
+        if (url.origin === location.origin && url.pathname.endsWith('/game/index.php') &&
+            (url.searchParams.get('page') === 'galaxy' || url.searchParams.get('component') === 'galaxy')) {
+          return url.href;
+        }
+      } catch (_) { /* Un lien inutilisable laisse la coordonnée en texte. */ }
+    }
+    const parts = coords.match(/^\[(\d+):(\d+):\d+\]$/);
+    if (!parts) return '';
+    const url = new URL('/game/index.php', location.origin);
+    url.searchParams.set('page', 'galaxy');
+    url.searchParams.set('galaxy', parts[1]);
+    url.searchParams.set('system', parts[2]);
+    return url.href;
+  }
+
+  function readClock(text) {
+    return text.match(/\b(?:[01]?\d|2[0-3]):[0-5]\d:[0-5]\d\b/)?.[0] || '';
+  }
+
+  function clockFromTimestamp(timestamp) {
+    if (!timestamp) return '—';
+    if (gameClockOffset === null) return new Date(timestamp).toLocaleTimeString('fr-FR', {
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    });
+    const seconds = (((Math.floor(timestamp / 1000) + gameClockOffset) % 86400) + 86400) % 86400;
+    return [Math.floor(seconds / 3600), Math.floor(seconds % 3600 / 60), seconds % 60]
+      .map(n => String(n).padStart(2, '0')).join(':');
+  }
+
+  function calibrateClock(rows) {
+    for (const row of rows) {
+      const arrival = Number(row.dataset.arrivalTime);
+      const displayed = readClock(cellText(row, '.arrivalTime'));
+      if (!arrival || !displayed) continue;
+      const [h, m, s] = displayed.split(':').map(Number);
+      gameClockOffset = ((h * 3600 + m * 60 + s - arrival % 86400) + 86400) % 86400;
+      return;
+    }
+  }
+
+  function nativeMovement(row, cells) {
+    const movement = row.querySelector('.icon_movement, .icon_movement_reserve') || cells[6];
+    if (!movement) return { style: null, details: [] };
+    // Depuis certaines versions d'OGame, le contenu est dans data-tooltip-title ;
+    // le title d'un autre élément de la flèche peut simplement valoir « ? ».
+    const target = movement.querySelector('.tooltip') || movement;
+    const raw = ['data-tooltip-title', 'data-tipped_restore_title', 'title']
+      .map(name => target.getAttribute(name))
+      .find(value => value && value.trim() !== '?') || '';
+    const doc = new DOMParser().parseFromString(raw, 'text/html');
+    const details = [];
+    const heading = doc.querySelector('h1, h2');
+    if (heading?.textContent.trim()) details.push(heading.textContent.trim());
+    for (const tr of doc.querySelectorAll('tr')) {
+      const cells = [...tr.querySelectorAll('th, td')].map(el => el.textContent.trim()).filter(Boolean);
+      if (cells.length) details.push(cells.join(' : '));
+    }
+    if (!details.length && doc.body.textContent.trim()) details.push(doc.body.textContent.trim());
+    if (!details.length) {
+      const fleet = row.querySelector('.detailsFleet');
+      const text = fleet?.textContent?.trim().replace(/\s+/g, ' ');
+      if (text && text !== '?') details.push(text);
+    }
+    let style = null;
+    for (const el of [target, movement]) {
+      for (const pseudo of [null, '::before', '::after']) {
+        const css = getComputedStyle(el, pseudo);
+        const image = css.backgroundImage !== 'none' ? css.backgroundImage : '';
+        const mask = css.maskImage && css.maskImage !== 'none' ? css.maskImage : '';
+        if (image || mask) {
+          style = { image, mask, position: css.backgroundPosition,
+            size: css.backgroundSize, repeat: css.backgroundRepeat };
+          break;
+        }
+      }
+      if (style) break;
+    }
+    return { style, details };
+  }
+
+  function showFleetTip(event, details) {
+    if (!details.length) return;
+    fleetTip.replaceChildren();
+    for (const [index, line] of details.entries()) {
+      const el = document.createElement(index === 0 ? 'strong' : 'div');
+      el.textContent = line;
+      fleetTip.append(el);
+    }
+    fleetTip.style.display = 'block';
+    positionFleetTip(event);
+  }
+
+  function positionFleetTip(event) {
+    const width = fleetTip.getBoundingClientRect().width;
+    fleetTip.style.left = `${Math.max(8, Math.min(event.clientX + 14, innerWidth - width - 8))}px`;
+    fleetTip.style.top = `${Math.max(8, Math.min(event.clientY + 12, innerHeight - fleetTip.offsetHeight - 8))}px`;
+  }
+
+  function parseRow(row) {
+    // Mission 15 : ne montrer que son retour. Toutes les autres missions restent visibles.
+    const missionType = row.getAttribute('data-mission-type') || row.querySelector('[data-mission-type]')?.getAttribute('data-mission-type') || '';
+    if (missionType === '15' && row.dataset.returnFlight !== 'true') return null;
+    const cells = row.querySelectorAll(':scope > td');
+    const origin = coordinate(cellText(row, '.coordsOrigin') || cells[4]?.textContent?.trim() || '');
+    const destination = cellText(row, '.destCoords, .coordsDest, .coordsDestination') ||
+      cells[8]?.textContent?.trim() || '';
+    const dest = coordinate(destination);
+    const returning = row.dataset.returnFlight === 'true';
+    // OGame conserve parfois la cible de l'aller dans la colonne destination
+    // du retour. Afficher le monde de départ, où la flotte rentre réellement.
+    const displayedCoords = returning ? origin : dest;
+    const displayedCell = returning
+      ? row.querySelector('.coordsOrigin') || cells[4]
+      : row.querySelector('.destCoords, .coordsDest, .coordsDestination') || cells[8];
+    const displayedUrl = galaxyLink(displayedCell, displayedCoords);
+    const fleetText = cellText(row, '.detailsFleet') || cells[5]?.textContent?.trim() || '';
+    // Le nombre n'est pas divulgué pour certaines flottes adverses : ne jamais
+    // remplacer ce champ par « flotte ennemie » ou « flotte propre ».
+    const rawShips = fleetText.match(/\d[\d\s.,]*/)?.[0]?.trim() || '';
+    const shipCount = Number(rawShips.replace(/\D/g, ''));
+    const ships = rawShips && Number.isFinite(shipCount)
+      ? shipCount >= 1000000 ? `${Math.floor(shipCount / 1000)}K` : String(shipCount)
+      : '—';
+    const movement = nativeMovement(row, cells);
+    const missionImg = row.querySelector('.missionFleet img');
+    const iconUrl = missionImg?.src && /^https:\/\//i.test(missionImg.src) ? missionImg.src : '';
+    const missionLabel = missionImg?.getAttribute('title') || missionImg?.getAttribute('alt') ||
+      row.querySelector('.missionFleet')?.getAttribute('title') || `Mission ${missionType || '?'}`;
+    const enemy = Boolean(row.querySelector('.hostile')) || row.classList.contains('hostile') ||
+      /flotte ennemie|flotte ennemi|enemy fleet|hostile/i.test(missionLabel);
+    const attack = missionType === '1' || missionType === '2';
+    const kind = attack ? (enemy ? 'enemy-attack' : 'own-attack') :
+      ({ '3': 'transport', '4': 'station', '5': 'ally-station',
+        '6': 'spy', '7': 'colonize' }[missionType] || '');
+    const labels = { '1': 'Attaque', '2': 'Attaque groupée', '3': 'Transport',
+      '4': 'Stationnement', '5': 'Stationnement allié', '6': 'Espionnage',
+      '7': 'Colonisation', '15': 'Expédition (retour)', '18': 'Découverte de formes de vie' };
+    const arrival = Number(row.dataset.arrivalTime) * 1000;
+    // Certaines lignes d'attaque groupée placent « Flotte ennemie » ou
+    // « Propre flotte » dans la cellule attendue pour l'heure.
+    const clockText = cellText(row, '.arrivalTime') || cells[1]?.textContent?.trim() || '';
+    const clock = readClock(clockText) || clockFromTimestamp(arrival);
+    return {
+      id: row.id || `${arrival}-${origin}-${dest}-${ships}`,
+      arrival: Number.isFinite(arrival) && arrival > 0 ? arrival : 0,
+      clock,
+      timer: cellText(row, '.countDown') || cells[0]?.textContent?.trim() || '',
+      origin, dest: displayedCoords, destUrl: displayedUrl, iconUrl, ships, returning,
+      movementStyle: movement.style, fleetDetails: movement.details,
+      missionLabel: labels[missionType] || missionLabel,
+      expedition: missionType === '15', discovery: missionType === '18', kind
+    };
+  }
+
+  function render() {
+    const entries = [...list.values()]
+      .filter(item => showExpeditions || (!item.expedition && !item.discovery))
+      .sort((a, b) => a.arrival - b.arrival);
+    updateStats();
+    const signature = JSON.stringify(entries.map(({ id, arrival, clock, dest, destUrl, iconUrl, ships, returning, kind, movementStyle, fleetDetails }) =>
+      [id, arrival, clock, dest, destUrl, iconUrl, ships, returning, kind, movementStyle, fleetDetails]));
+    if (signature === renderedSignature) return;
+    renderedSignature = signature;
+    rowsBox.replaceChildren();
+    if (!entries.length) {
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = showExpeditions
+        ? "Aucun événement visible. Déplie « Événements » dans OGame pour charger la liste."
+        : "Aucune autre mission visible. Clique sur « + » pour réafficher les expéditions et découvertes.";
+      rowsBox.append(empty);
+      return;
+    }
+    for (const item of entries) {
+      const row = document.createElement('div');
+      row.className = `row ${item.kind}`;
+      row.title = item.missionLabel;
+      const icon = document.createElement('span');
+      icon.className = 'mission-icon';
+      if (item.iconUrl) {
+        const img = document.createElement('img');
+        img.src = item.iconUrl;
+        img.alt = '';
+        icon.append(img);
+      } else {
+        icon.textContent = '◆';
+      }
+      row.append(icon);
+      for (const [name, value] of [
+        ['timer', item.timer], ['clock', item.clock],
+        ['ships', item.ships], ['direction', item.returning ? '◀◀' : '▶▶'], ['dest', item.dest]
+      ]) {
+        const href = name === 'dest' ? item.destUrl : '';
+        const cell = document.createElement(href ? 'a' : 'span');
+        cell.className = name;
+        cell.textContent = value;
+        if (href) {
+          cell.href = href;
+          cell.title = `Voir ${value} dans la galaxie`;
+        }
+        if (name === 'timer') cell.dataset.arrival = String(item.arrival);
+        if (name === 'ships') cell.title = `Vaisseaux : ${value}`;
+        if (name === 'direction') {
+          cell.title = '';
+          cell.setAttribute('aria-label', item.returning ? 'Retour' : 'Aller');
+          if (item.movementStyle) {
+            const s = item.movementStyle;
+            cell.textContent = '';
+            cell.style.backgroundImage = s.image;
+            cell.style.backgroundPosition = s.position;
+            cell.style.backgroundSize = s.size;
+            cell.style.backgroundRepeat = s.repeat;
+            if (s.mask) {
+              cell.style.maskImage = s.mask;
+              cell.style.backgroundColor = '#91a5b7';
+            }
+          }
+          cell.addEventListener('mouseenter', event => showFleetTip(event, item.fleetDetails));
+          cell.addEventListener('mousemove', event => {
+            if (fleetTip.style.display === 'block') positionFleetTip(event);
+          });
+          cell.addEventListener('mouseleave', () => { fleetTip.style.display = 'none'; });
+        }
+        row.append(cell);
+      }
+      rowsBox.append(row);
+    }
+  }
+
+  function sync() {
+    updatePending = false;
+    readGameSlots();
+    updateStats();
+    const table = document.querySelector('#eventContent');
+    // Quand OGame rafraîchit le bloc, reprendre les nouvelles lignes sans requête supplémentaire.
+    if (table && table !== observedTable) {
+      observedTable = table;
+      tableObserver.disconnect();
+      tableObserver.observe(table, { childList: true, subtree: true });
+    }
+    if (table) {
+      list.clear();
+      const eventRows = [...table.querySelectorAll('tr.eventFleet')];
+      calibrateClock(eventRows);
+      for (const row of eventRows) {
+        const item = parseRow(row);
+        if (item) list.set(item.id, item);
+      }
+      render();
+    }
+  }
+
+  function scheduleSync() {
+    if (updatePending) return;
+    updatePending = true;
+    setTimeout(sync, 100);
+  }
+
+  function markPhalanxRefresh(mutations = []) {
+    for (const dialog of document.querySelectorAll('.ui-dialog')) {
+      const report = dialog.querySelector('#phalanxWrap, .phalanx');
+      if (!report) continue;
+      const title = dialog.querySelector('.ui-dialog-titlebar .ui-dialog-title');
+      if (!title) continue;
+      let stamp = title.querySelector('.triling-phalanx-time');
+      const lastReport = phalanxReports.get(dialog);
+      // OGame recrée la fenêtre ou ses lignes à chaque nouveau scan. Les
+      // chronos sont des changements de texte et ne déclenchent pas ceci.
+      const reportChanged = !lastReport || lastReport !== report || mutations.some(m =>
+        report.contains(m.target) && [...m.addedNodes, ...m.removedNodes].some(node =>
+          node.nodeType === Node.ELEMENT_NODE &&
+          !node.classList?.contains('triling-phalanx-time')));
+      if (!stamp) {
+        stamp = document.createElement('span');
+        stamp.className = 'triling-phalanx-time';
+        stamp.style.cssText = 'margin-left:12px;color:#a7d6e9;font:normal 11px Arial,sans-serif;white-space:nowrap';
+        title.append(stamp);
+      }
+      if (reportChanged || !stamp.textContent) stamp.textContent = `Actualisé : ${clockFromTimestamp(Date.now())}`;
+      phalanxReports.set(dialog, report);
+    }
+  }
+
+  // Les chronos natifs changent chaque seconde : ignorer ces mutations de texte.
+  const tableObserver = new MutationObserver(mutations => {
+    if (mutations.some(m => [...m.addedNodes, ...m.removedNodes].some(n =>
+      n.nodeType === Node.ELEMENT_NODE &&
+      (n.matches?.('tr.eventFleet, tbody, #eventContent') || n.querySelector?.('tr.eventFleet'))))) {
+      scheduleSync();
+    }
+  });
+  const pageObserver = new MutationObserver(mutations => {
+    if (document.querySelector('#eventContent') !== observedTable) scheduleSync();
+    showGalaxyGoTime();
+    if (mutations.some(m => [...m.addedNodes, ...m.removedNodes].some(node =>
+      node.nodeType === Node.ELEMENT_NODE &&
+      (node.matches?.('.ui-dialog, .phalanx, #phalanxWrap') ||
+        node.querySelector?.('.phalanx, #phalanxWrap') ||
+        m.target.closest?.('.ui-dialog .phalanx, #phalanxWrap'))))) {
+      markPhalanxRefresh(mutations);
+    }
+  });
+  pageObserver.observe(document.body, { childList: true, subtree: true });
+
+  // Le compte à rebours affiché est celui d'OGame, et sert de point de départ au décompte local.
+  // La synchronisation périodique corrige l'écart éventuel entre l'horloge du PC et celle du jeu.
+  setInterval(() => {
+    for (const timer of rowsBox.querySelectorAll('.timer[data-arrival]')) {
+      const remaining = Math.max(0, Math.ceil((Number(timer.dataset.arrival) - Date.now()) / 1000));
+      if (!remaining) { timer.textContent = 'Arrivé'; continue; }
+      const days = Math.floor(remaining / 86400);
+      const hours = Math.floor((remaining % 86400) / 3600);
+      const minutes = Math.floor((remaining % 3600) / 60);
+      const seconds = remaining % 60;
+      timer.textContent = (days ? `${days}j ` : '') + (hours ? `${hours}h ` : '') +
+        `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+    }
+  }, 1000);
+  setInterval(scheduleSync, 15000);
+  setInterval(refreshMovementSlots, 30000);
+  render();
+  scheduleSync();
+  showGalaxyGoTime();
+  markPhalanxRefresh();
+  setTimeout(refreshMovementSlots, 1000);
+})();
